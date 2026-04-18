@@ -1,11 +1,11 @@
-import streamlit as st
 import gspread
 from google.oauth2 import service_account
 import json
 import os
 
-# THE MASTER TELEMETRY BRIDGE (CLOUD-READY)
-def get_sheets_client():
+# THE MASTER TELEMETRY BRIDGE (LIGHTNING FAST / BACKGROUND READY)
+# Removed streamlit dependency to allow background threading without UI blocks.
+def get_sheets_client(secrets=None):
     try:
         JSON_KEY_PATH = "rooty-leaderboard-firebase-adminsdk-fbsvc-ebf80e2d1b.json"
         
@@ -13,10 +13,9 @@ def get_sheets_client():
         if os.path.exists(JSON_KEY_PATH):
             with open(JSON_KEY_PATH, "r") as f:
                 creds_dict = json.load(f)
-        # Priority 2: Streamlit Secrets (Production Cloud)
-        elif "FIREBASE_SERVICE_ACCOUNT" in st.secrets:
-            # Handle both raw strings and pre-parsed TOML dictionaries
-            creds_dict = st.secrets["FIREBASE_SERVICE_ACCOUNT"]
+        # Priority 2: Passed Secrets (Cloud Prod)
+        elif secrets and "FIREBASE_SERVICE_ACCOUNT" in secrets:
+            creds_dict = secrets["FIREBASE_SERVICE_ACCOUNT"]
             if isinstance(creds_dict, str):
                 creds_dict = json.loads(creds_dict)
         else:
@@ -32,9 +31,13 @@ def get_sheets_client():
     except:
         return None
 
-def log_event(data):
+def log_event(data, secrets=None):
+    """
+    Designed to run in a background thread. 
+    Does not use st.toast or any blocking UI calls.
+    """
     try:
-        client = get_sheets_client()
+        client = get_sheets_client(secrets)
         if not client: return False
         
         # Spreadsheet Surgical Strike
@@ -51,7 +54,6 @@ def log_event(data):
         ]
         
         worksheet.append_row(row)
-        st.toast("🎯 Session Saved to Warehouse!", icon="✅")
         return True
     except:
         return False
