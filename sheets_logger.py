@@ -15,7 +15,10 @@ def get_sheets_client():
                 creds_dict = json.load(f)
         # Priority 2: Streamlit Secrets (Production Cloud)
         elif "FIREBASE_SERVICE_ACCOUNT" in st.secrets:
-            creds_dict = json.loads(st.secrets["FIREBASE_SERVICE_ACCOUNT"])
+            # Handle both raw strings and pre-parsed TOML dictionaries
+            creds_dict = st.secrets["FIREBASE_SERVICE_ACCOUNT"]
+            if isinstance(creds_dict, str):
+                creds_dict = json.loads(creds_dict)
         else:
             return None
         

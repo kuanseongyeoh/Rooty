@@ -129,9 +129,11 @@ def get_db():
             creds = service_account.Credentials.from_service_account_file(JSON_KEY_PATH)
         # Priority 2: Streamlit Secrets (Production Cloud)
         elif "FIREBASE_SERVICE_ACCOUNT" in st.secrets:
-            # We assume it's stored as a JSON string in secrets
-            import json
-            creds_info = json.loads(st.secrets["FIREBASE_SERVICE_ACCOUNT"])
+            # Handle both raw strings and pre-parsed TOML dictionaries
+            creds_info = st.secrets["FIREBASE_SERVICE_ACCOUNT"]
+            if isinstance(creds_info, str):
+                import json
+                creds_info = json.loads(creds_info)
             creds = service_account.Credentials.from_service_account_info(creds_info)
         else:
             return None
