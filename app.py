@@ -623,18 +623,20 @@ def inject_global_styles():
 
     // [2] HARDWARE SCOUT BRIDGE
     const probe = () => {
-        const specs = {
-            screen: `${window.screen.width}x${window.screen.height}`,
-            viewport: `${window.innerWidth}x${window.innerHeight}`,
-            platform: navigator.platform,
-            ratio: window.devicePixelRatio,
-            ua: navigator.userAgent
-        };
-        const bridge = p.querySelector('input[aria-label="HW_BRIDGE"]');
-        if (bridge) {
-            bridge.value = JSON.stringify(specs);
-            bridge.dispatchEvent(new Event('input', {bubbles:true}));
-        }
+        try {
+            const specs = {
+                screen: `${window.screen.width}x${window.screen.height}`,
+                viewport: `${window.innerWidth}x${window.innerHeight}`,
+                platform: navigator.platform,
+                ratio: window.devicePixelRatio,
+                ua: navigator.userAgent
+            };
+            const bridge = p.querySelector('input[aria-label="HW_BRIDGE"]');
+            if (bridge) {
+                bridge.value = JSON.stringify(specs);
+                bridge.dispatchEvent(new Event('input', {bubbles:true}));
+            }
+        } catch(e) { console.warn("Rooty: Probe failed", e); }
     };
     probe(); // Run immediately
     setTimeout(probe, 2000); // Run again later to catch any delayed Streamlit renders
@@ -703,15 +705,17 @@ def render_home():
     if(window.parent._kbClean) window.parent._kbClean();
     
     const p = window.parent.document;
-    const currentNick = p.getElementById('nick-display-source')?.innerText || "";
     
-    if(currentNick) localStorage.setItem('rootyNick', currentNick);
-    
-    let deviceId = localStorage.getItem('rootyDeviceId');
-    if(!deviceId) {
-        deviceId = 'dev_' + Math.random().toString(36).substr(2, 9);
-        localStorage.setItem('rootyDeviceId', deviceId);
-    }
+    try {
+        const currentNick = p.getElementById('nick-display-source')?.innerText || "";
+        if(currentNick) localStorage.setItem('rootyNick', currentNick);
+        
+        let deviceId = localStorage.getItem('rootyDeviceId');
+        if(!deviceId) {
+            deviceId = 'dev_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('rootyDeviceId', deviceId);
+        }
+    } catch(e) { console.warn("Rooty: local persistence blocked"); }
     
     if(!window.parent._hwSynced) {
         const specs = {
@@ -804,17 +808,19 @@ def render_gameplay_shard():
     const remaining = REMAINING_TIME;
     
     // 1. Clear stale timeouts, then set a new one using ACTUAL remaining time
-    if(window.parent._drTmr) clearTimeout(window.parent._drTmr);
+    if(window.parent._drTmr) window.parent.clearTimeout(window.parent._drTmr);
     window.parent._drTmr = window.parent.setTimeout(() => {
         const b = Array.from(p.querySelectorAll('button')).find(btn => btn.textContent.trim()==='timeout_trigger');
         if(b) b.click();
     }, Math.max(0, remaining * 1000));
 
     // 2. PB Update
-    let pb = parseInt(window.localStorage.getItem('digitalRootPB') || '0', 10);
-    const score = CURR_SCORE;
-    if (score > pb) { pb = score; window.localStorage.setItem('digitalRootPB', pb); }
-    const pbEl = p.getElementById('pb-val-UNIQUE_ID'); if(pbEl) pbEl.innerText = pb.toLocaleString();
+    try {
+        let pb = parseInt(window.localStorage.getItem('digitalRootPB') || '0', 10);
+        const score = CURR_SCORE;
+        if (score > pb) { pb = score; window.localStorage.setItem('digitalRootPB', pb); }
+        const pbEl = p.getElementById('pb-val-UNIQUE_ID'); if(pbEl) pbEl.innerText = pb.toLocaleString();
+    } catch(e) { console.warn("Rooty: PB storage blocked"); }
     
     // 3. Keyboard Support
     if(window.parent._kbClean) window.parent._kbClean();
