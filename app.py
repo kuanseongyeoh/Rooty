@@ -12,7 +12,7 @@ import requests
 import json
 import threading
 import traceback
-
+import streamlit.components.v1 as components
 
 # Firestore Config
 JSON_KEY_PATH = "rooty-leaderboard-firebase-adminsdk-fbsvc-ebf80e2d1b.json"
@@ -610,7 +610,7 @@ def inject_global_styles():
         }
     </style>
     """, unsafe_allow_html=True)
-    st.html("""<script>
+    components.html("""<script>
     const p = window.parent.document;
     
     // [1] SURGICAL TOUCH CONTROLLER
@@ -652,7 +652,7 @@ def inject_global_styles():
     const observer = new MutationObserver(purge);
     observer.observe(p, { childList: true, subtree: true });
     purge(); // Run once immediately
-    </script>""")
+    </script>""", height=0, width=0)
 
 # ==========================================
 # --- 6. PAGE RENDERERS ---
@@ -699,7 +699,7 @@ def render_home():
     
     # Local bridge removed - now handled globally
 
-    st.html("""<script>
+    components.html("""<script>
     if(window.parent._kbClean) window.parent._kbClean();
     
     const p = window.parent.document;
@@ -737,7 +737,7 @@ def render_home():
         
         window.parent._hwSynced = true;
     }
-    </script>""")
+    </script>""", height=0, width=0)
 
 @st.fragment
 def render_gameplay_shard():
@@ -833,7 +833,7 @@ def render_gameplay_shard():
     js_code = js_code.replace("UNIQUE_ID", str(unique_id))
     
     # DYNAMIC RENDER: The unique_id in the script ensures it fresh environment
-    st.html(js_code)
+    components.html(js_code, height=0, width=0)
 
     # Cleanup state after render
     if st.session_state.get('feedback_state') != 'neutral':
@@ -848,7 +848,7 @@ def render_gameplay():
     st.button("timeout_trigger", key="ht", on_click=handle_timeout_js)
 
     # 3. Button Hider
-    st.html("""<script>
+    components.html("""<script>
     const p = window.parent.document;
     const loop = setInterval(() => {
         const b = Array.from(p.querySelectorAll('button')).find(btn => btn.textContent.trim()==='timeout_trigger');
@@ -857,7 +857,7 @@ def render_gameplay():
             clearInterval(loop);
         }
     }, 50);
-    </script>""")
+    </script>""", height=0, width=0)
     sync_hw_bridge()
 
 def render_game_over():
@@ -873,7 +873,7 @@ def render_game_over():
     st.button("Main Menu", use_container_width=True, on_click=go_home)
     st.markdown("</div>", unsafe_allow_html=True)
     
-    st.html("""<script>
+    components.html("""<script>
     const p = window.parent.document;
     if(window.parent._kbClean) window.parent._kbClean(); // Purge gameplay listener
     
@@ -885,7 +885,7 @@ def render_game_over():
     };
     p.addEventListener('keydown', goHandler);
     window.parent._kbGoClean = () => p.removeEventListener('keydown', goHandler);
-    </script>""")
+    </script>""", height=0, width=0)
 
 def render_tutorial():
     st.markdown(f"""
@@ -1041,7 +1041,7 @@ def render_leaderboard():
     
     # Auto-scroll to user's row
     if nick and (user_stats or any(e.get('name') == nick for e in top_entries)):
-        st.html("""<script>
+        components.html("""<script>
         const p = window.parent.document;
         setTimeout(() => {
             const row = p.getElementById('rooty-user-row');
@@ -1052,7 +1052,7 @@ def render_leaderboard():
                 scroller.scrollTo({ top: Math.max(0, center), behavior: 'smooth' });
             }
         }, 150);
-        </script>""")
+        </script>""", height=0, width=0)
 
     # Sticky Footer Buttons
     st.markdown('<div class="menu-btn-container" style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #333; width: 100%;">', unsafe_allow_html=True)
