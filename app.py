@@ -120,9 +120,9 @@ def init_state():
     if 'max_digits_hit' not in st.session_state: st.session_state.max_digits_hit = 2
     if 'curr_meta' not in st.session_state: 
         n, m = generate_target_number(0)
-        st.session_state.target_number = n
-        st.session_state.curr_meta = m
+        if 'max_digits_hit' not in st.session_state: st.session_state.max_digits_hit = 2
     if 'current_game_id' not in st.session_state: st.session_state.current_game_id = ""
+    if 'game_active' not in st.session_state: st.session_state.game_active = False
     init_analytics()
 
 @st.cache_resource
@@ -327,7 +327,12 @@ def log_session_end(reason="completed"):
 
 def submit_score(name, score):
     if not name or score <= 0: return
+    # IRONCLAD SENTRY: Atomic One-Shot Guard
+    if not st.session_state.get('game_active', False):
+        return
+    
     try:
+        st.session_state.game_active = False
         # 1. ALWAYS log session end
         log_session_end("game_over")
 
@@ -361,6 +366,7 @@ def fetch_leaderboard_data(nickname):
         return top_100, user_stats, total_players
     except: return [], None, 0
 
+@st.cache_data(ttl=60)
 def get_world_record():
     db = get_db()
     if not db: return 0
@@ -403,6 +409,7 @@ def start_game():
     st.session_state.game_start_time = time.time()
     st.session_state.round_start_time = time.time()
     st.session_state.feedback_state = 'neutral'
+    st.session_state.game_active = True
     log_session_start()
 
 def go_home():
@@ -474,6 +481,7 @@ def handle_guess(guess):
         if INSTANT_GAME_OVER_ON_WRONG == 1: 
             submit_score(st.session_state.get('nickname'), st.session_state.total_score)
             st.session_state.game_status = 'leaderboard'
+            st.rerun()
         else: 
             st.session_state.round_start_time -= 0.5
 
@@ -482,6 +490,7 @@ def handle_timeout_js():
     submit_score(st.session_state.get('nickname'), st.session_state.total_score)
     st.session_state.game_status = 'leaderboard'
     st.session_state.feedback_state = 'incorrect'
+    st.rerun()
 
 # ==========================================
 # --- 5. UI STYLING & INJECTION ---
@@ -522,16 +531,11 @@ def inject_global_styles():
         
         div[data-testid="stHorizontalBlock"] > div { width: 100% !important; min-width: 100% !important; }
         
-        /* [3] BUTTON MAXIMIZATION: Force buttons to fill every pixel of their grid cell */
+        /* [3] BUTTON MAXIMIZATION & CLEAN LOOK */
         div[data-testid="stButton"], div[data-testid="stButton"] button {
             width: 100% !important;
             margin: 0 !important;
             padding: 0 !important;
-        }
-
-        div[data-testid="stHorizontalBlock"] button p {
-            font-size: clamp(28px, 8vw, 42px) !important;
-            font-weight: 800 !important;
         }
 
         div[data-testid="stHorizontalBlock"] button {
@@ -757,14 +761,16 @@ def render_home():
     }
     </script>""", height=0, width=0)
 
-def render_gameplay():
+@st.fragment
+def render_gameplay_shard():
+    """HIGH-SPEED FRAGMENT: Handles the keypad, challenge display, and score HUD."""
     unique_id = random.randint(100000, 999999)
     elapsed = time.time() - st.session_state.round_start_time
     remaining = max(0, TIME_LIMIT_SECONDS - elapsed)
     fraction = min(1.0, elapsed / TIME_LIMIT_SECONDS)
     current_feedback = st.session_state.get('feedback_state', 'neutral')
-    if current_feedback != 'neutral': st.session_state.feedback_state = 'neutral'
     
+    # HUD & Target
     st.markdown(f"""
     <style>
         @keyframes flashG_{unique_id} {{ 0%, 100% {{ background: transparent; }} 50% {{ background: #2e7d32; }} }}
@@ -798,8 +804,8 @@ def render_gameplay():
         </div>
     </div>
     """, unsafe_allow_html=True)
-
-    # The Grid buttons are now perfectly aligned globally via the HorizontalBlock grid CSS
+    
+    # Keypad
     cols = st.columns(3)
     with cols[0]:
         st.button("1", key="n1", use_container_width=True, on_click=handle_guess, args=(1,))
@@ -813,36 +819,68 @@ def render_gameplay():
         st.button("3", key="n3", use_container_width=True, on_click=handle_guess, args=(3,))
         st.button("6", key="n6", use_container_width=True, on_click=handle_guess, args=(6,))
         st.button("9", key="n9", use_container_width=True, on_click=handle_guess, args=(9,))
-    
-    st.button("timeout_trigger", key="ht", on_click=handle_timeout_js)
-    components.html(f"""<script>
-    const p = window.parent.document;
-    const currentScore = {st.session_state.total_score};
-    let pb = parseInt(window.localStorage.getItem('digitalRootPB') || '0', 10);
-    if (currentScore > pb) {{ pb = currentScore; window.localStorage.setItem('digitalRootPB', pb); }}
-    const pbEl = p.getElementById('pb-val-{unique_id}'); if(pbEl) pbEl.innerText = pb.toLocaleString();
-    
-    function find() {{ return Array.from(p.querySelectorAll('button')).find(b => b.textContent.trim()==='timeout_trigger'); }}
-    const loop = setInterval(() => {{
-        const b = find(); if(b) {{ b.closest('[data-testid="stButton"]').style.cssText = 'opacity:0;position:absolute;pointer-events:none;height:0;'; clearInterval(loop); }}
-    }}, 50);
-    setTimeout(() => {{ const b = find(); if(b) b.click(); }}, {int(remaining*1000)});
 
-    // --- KEYBOARD SUPPORT BRIDGE ---
-    const pEl = window.parent.document;
-    if(window.parent._kbClean) window.parent._kbClean();
-    if(window.parent._kbGoClean) window.parent._kbGoClean();
+    # JS BRIDGE: Timer, PB & Keys (Inside fragment to stay in sync)
+    js_code = """<script>
+    const p = window.parent.document;
+    const start = START_TIME;
+    const limit = LIMIT_TIME;
     
-    const kbHandler = (e) => {{
-        if (e.key >= '1' && e.key <= '9') {{
-            const btns = Array.from(pEl.querySelectorAll('button'));
+    // 1. One-Shot Timer: Clears any old timer and set a fresh 10s one
+    if(window.parent._drTmr) window.parent.clearTimeout(window.parent._drTmr);
+    window.parent._drTmr = window.parent.setTimeout(() => {
+        const b = Array.from(p.querySelectorAll('button')).find(btn => btn.textContent.trim()==='timeout_trigger');
+        if(b) b.click();
+    }, limit * 1000);
+
+    // 2. PB Update
+    let pb = parseInt(window.localStorage.getItem('digitalRootPB') || '0', 10);
+    const score = CURR_SCORE;
+    if (score > pb) { pb = score; window.localStorage.setItem('digitalRootPB', pb); }
+    const pbEl = p.getElementById('pb-val-UNIQUE_ID'); if(pbEl) pbEl.innerText = pb.toLocaleString();
+    
+    // 3. Keyboard Support
+    if(window.parent._kbClean) window.parent._kbClean();
+    const kbHandler = (e) => {
+        if (e.key >= '1' && e.key <= '9') {
+            const btns = Array.from(p.querySelectorAll('button'));
             const target = btns.find(b => b.textContent.trim() === e.key);
             if (target) target.click();
-        }}
-    }};
-    pEl.addEventListener('keydown', kbHandler);
-    window.parent._kbClean = () => pEl.removeEventListener('keydown', kbHandler);
+        }
+    };
+    p.addEventListener('keydown', kbHandler);
+    window.parent._kbClean = () => p.removeEventListener('keydown', kbHandler);
+    </script>"""
+    js_code = js_code.replace("START_TIME", str(st.session_state.round_start_time))
+    js_code = js_code.replace("LIMIT_TIME", str(TIME_LIMIT_SECONDS))
+    js_code = js_code.replace("CURR_SCORE", str(st.session_state.total_score))
+    js_code = js_code.replace("UNIQUE_ID", str(unique_id))
+    components.html(js_code, height=0, width=0)
+
+    # Cleanup state after render
+    if st.session_state.get('feedback_state') != 'neutral':
+        st.session_state.feedback_state = 'neutral'
+
+def render_gameplay():
+    """MAIN APP LAYER: Fixed-position elements (Sentry)."""
+    # 1. High-speed shard
+    render_gameplay_shard()
+
+    # 2. Timeout Sentry Trigger
+    st.button("timeout_trigger", key="ht", on_click=handle_timeout_js)
+
+    # 3. Button Hider
+    components.html("""<script>
+    const p = window.parent.document;
+    const loop = setInterval(() => {
+        const b = Array.from(p.querySelectorAll('button')).find(btn => btn.textContent.trim()==='timeout_trigger');
+        if(b) {
+            b.closest('[data-testid="stButton"]').style.cssText = 'opacity:0;position:absolute;pointer-events:none;height:0;';
+            clearInterval(loop);
+        }
+    }, 50);
     </script>""", height=0, width=0)
+    sync_hw_bridge()
 
 def render_game_over():
     st.markdown(f"""
