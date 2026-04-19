@@ -125,6 +125,7 @@ def init_state():
     if 'current_game_id' not in st.session_state: st.session_state.current_game_id = ""
     init_analytics()
 
+@st.cache_resource
 def get_db():
     try:
         # Priority 1: Local File (Dev Environment)
@@ -198,6 +199,7 @@ def get_weekly_cid():
     yr, wk, _ = now.isocalendar()
     return f"scores_{yr}_W{wk:02d}"
 
+@st.cache_data(ttl=3600)
 def get_geo_info():
     """Privacy-safe: Get country from IP then discard IP."""
     try:
@@ -280,7 +282,10 @@ def sync_hw_bridge():
             st.session_state.hw_specs.update(specs)
             if 'did' in specs: st.session_state.device_id = specs['did']
             # Re-log start if specs arrive late to ensure screen size is captured
-            log_session_start()
+            # CRITICAL: Only log once per session to prevent 1.5s lag on every sync
+            if not st.session_state.get('session_start_complete'):
+                log_session_start()
+                st.session_state.session_start_complete = True
         except: pass
 
 def log_session_end(reason="completed"):
@@ -314,10 +319,10 @@ def log_session_end(reason="completed"):
                 "rounds": st.session_state.round_log
             }
         }
-        # Lightning Snapshot: Convert secrets to plain dict
+        # Lightning Snapshot: Convert secrets to plain dict for thread safety
         frozen_creds = get_frozen_creds()
-        # Synchronous Handoff: This ensures the data is sent before the script ends (Fixed for Mac)
-        background_log_sheets(summary, frozen_creds)
+        # Restore Background Threading for UI Snappiness
+        threading.Thread(target=background_log_sheets, args=(summary, frozen_creds)).start()
     except: pass
 
 def submit_score(name, score):
@@ -326,8 +331,8 @@ def submit_score(name, score):
         # 1. ALWAYS log session end
         log_session_end("game_over")
 
-        # 2. Firestore is faster/more stable in bg, but we can make this sync too if needed.
-        # For now, let's keep it sync for maximum reliability.
+        # 2. Synchronous Score Submission (Ensures rank is ready for the next screen)
+        # We call the logic directly instead of in a thread
         frozen_creds = get_frozen_creds()
         background_submit_score(name, score, frozen_creds)
     except: pass
