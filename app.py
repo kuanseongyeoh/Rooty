@@ -12,7 +12,7 @@ import requests
 import json
 import threading
 import traceback
-import streamlit.components.v1 as components
+
 
 # Firestore Config
 JSON_KEY_PATH = "rooty-leaderboard-firebase-adminsdk-fbsvc-ebf80e2d1b.json"
@@ -293,6 +293,25 @@ def log_session_end(reason="completed"):
         threading.Thread(target=background_log_sheets, args=(summary, frozen_creds)).start()
     except: pass
 
+def _bg_submit_score(name, score):
+    """Background: write score to Firestore using cached client."""
+    try:
+        db = get_db()
+        if not db: return
+        cid = get_weekly_cid()
+        doc_ref = db.collection(cid).document(name)
+        existing = doc_ref.get()
+        new_data = {
+            "name": name,
+            "score": score,
+            "level": math.ceil(score/100),
+            "ts_utc0": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "ts_local": datetime.datetime.now().isoformat()
+        }
+        if not existing.exists or score > existing.to_dict().get('score', 0):
+            doc_ref.set(new_data)
+    except: pass
+
 def submit_score(name, score):
     if not name or score <= 0: return
     # IRONCLAD SENTRY: Atomic One-Shot Guard
@@ -304,44 +323,41 @@ def submit_score(name, score):
         # 1. ALWAYS log session end
         log_session_end("game_over")
 
-        # 2. Fast Synchronous Score Submission (uses cached client, no new handshake)
-        db = get_db()
-        if db:
-            cid = get_weekly_cid()
-            doc_ref = db.collection(cid).document(name)
-            existing = doc_ref.get()
-            new_data = {
-                "name": name,
-                "score": score,
-                "level": math.ceil(score/100),
-                "ts_utc0": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                "ts_local": datetime.datetime.now().isoformat()
-            }
-            if not existing.exists or score > existing.to_dict().get('score', 0):
-                doc_ref.set(new_data)
+        # 2. Background Score Write (non-blocking, leaderboard uses optimistic rendering)
+        threading.Thread(target=_bg_submit_score, args=(name, score)).start()
     except: pass
 
-def fetch_leaderboard_data(nickname):
+def fetch_leaderboard_data(nickname, session_score=0):
     db = get_db()
     if not db: return [], None, 0
     try:
         cid = get_weekly_cid()
-        # 1. Fetch Top 100
+        # 1. Fetch Top 100 + Total Players (2 queries)
         docs = db.collection(cid).order_by("score", direction=firestore.Query.DESCENDING).limit(100).stream()
         top_100 = [d.to_dict() for d in docs]
+        total_players = db.collection(cid).count().get()[0][0].value
         
-        # 2. Get User Stats
+        # 2. Optimistic User Stats (0 extra queries if in top 100, 1 if not)
         user_stats = None
         if nickname:
-            user_doc = db.collection(cid).document(nickname).get()
-            if user_doc.exists:
-                user_stats = user_doc.to_dict()
-                # Find rank
-                rank_query = db.collection(cid).where("score", ">", user_stats['score']).count().get()
-                user_stats['rank'] = rank_query[0][0].value + 1
+            # Check if user is already in the top 100 results
+            for i, entry in enumerate(top_100):
+                if entry.get('name') == nickname:
+                    user_stats = dict(entry)
+                    user_stats['rank'] = i + 1
+                    break
+            
+            if not user_stats and session_score > 0:
+                # User not in top 100: build optimistic stats from session data
+                # Use 1 count query for rank instead of 2 queries (doc fetch + count)
+                rank_query = db.collection(cid).where("score", ">", session_score).count().get()
+                user_stats = {
+                    'name': nickname,
+                    'score': session_score,
+                    'level': math.ceil(session_score / 100),
+                    'rank': rank_query[0][0].value + 1
+                }
         
-        # 3. Total Players
-        total_players = db.collection(cid).count().get()[0][0].value
         return top_100, user_stats, total_players
     except: return [], None, 0
 
@@ -524,10 +540,24 @@ def inject_global_styles():
             align-items: center !important;
         }
 
-        /* [4] HOME/OVERLAY BUTTONS: The specific 80vw centered menu style */
+        /* [4] MENU CONTAINER: All children share centered layout */
+        .menu-btn-container div[data-testid="stButton"] button,
+        .menu-btn-container div[data-testid="stTextInput"] {
+            width: 85vw !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+        }
+
+        /* Gaps between menu items */
+        .menu-btn-container div[data-testid="stButton"] {
+            margin-bottom: 1.2dvh !important;
+        }
+
+        .menu-btn-container div[data-testid="stTextInput"] {
+            margin-bottom: 5dvh !important;
+        }
+
         .menu-btn-container div[data-testid="stButton"] button {
-            width: 80vw !important;
-            margin: 0 auto 2.5dvh auto !important;
             height: 9dvh !important;
             border-radius: 12px !important;
             background-color: #333 !important;
@@ -537,24 +567,18 @@ def inject_global_styles():
             box-shadow: 0 4px 10px rgba(0,0,0,0.3) !important;
         }
 
-
         /* Target Number & Flash FX */
         .challenge-number {
             font-size: var(--target-font); font-weight: 800; text-align: center; color: white;
             letter-spacing: 0.125em; padding: 10px 40px; border-radius: 20px;
         }
         
-        /* [7] CLEAN MINIMALIST IDENTITY BAR */
-        div[data-testid="stTextInput"] {
-            width: 80vw !important;
-            margin: 1.5vh auto !important;
-        }
-
+        /* [7] TEXT INPUT APPEARANCE (global, layout handled by container) */
         div[data-testid="stTextInput"] input {
             text-align: center !important;
             font-size: 20px !important;
             font-weight: 700 !important;
-            color: #888 !important; /* Modern Grey */
+            color: #888 !important;
             background: transparent !important;
             border: none !important;
             border-bottom: 2px solid #444 !important;
@@ -586,7 +610,7 @@ def inject_global_styles():
         }
     </style>
     """, unsafe_allow_html=True)
-    components.html("""<script>
+    st.html("""<script>
     const p = window.parent.document;
     
     // [1] SURGICAL TOUCH CONTROLLER
@@ -628,24 +652,25 @@ def inject_global_styles():
     const observer = new MutationObserver(purge);
     observer.observe(p, { childList: true, subtree: true });
     purge(); // Run once immediately
-    </script>""", height=0, width=0)
+    </script>""")
 
 # ==========================================
 # --- 6. PAGE RENDERERS ---
 # ==========================================
 def render_home():
     st.markdown(f"""
-    <div style="text-align: center; margin-top: 1.5vh; width: 100%;">
-        <h1 style="color: {ROOTY_COLOR}; font-size: 15vw; margin-bottom: 0px; font-weight: 800; line-height: 1;">Rooty!</h1>
-        <p style="color: #888; font-size: 4vw; margin-top: 0px; margin-bottom: 2dvh;">Challenge the Math</p>
+    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; margin-top: 0; width: 100%;">
+        <p style="color: {ROOTY_COLOR}; font-size: 15vw; margin: 0; font-weight: 800; line-height: 1;">Rooty!</p>
+        <p style="color: #888; font-size: 5vw; margin: 0; margin-bottom: 1dvh;">Challenge the Math</p>
     </div>
     """, unsafe_allow_html=True)
 
-    st.markdown('<div class="menu-btn-container" style="margin-top: 1dvh;">', unsafe_allow_html=True)
-
-    # Nickname Error Alert (Moved ABOVE Input per latest diagram)
+    # Nickname Error Alert (Floating ABOVE the container to avoid shifting layout)
+    alert_html = ""
     if st.session_state.get('nick_error'):
-        st.markdown(f'<div style="text-align: center; color: #ff5252; font-weight: 700; font-size: 14px; margin-bottom: 1dvh;">⚠️ PLEASE ENTER A NICKNAME TO PLAY</div>', unsafe_allow_html=True)
+        alert_html = '<div style="position: absolute; top: -40px; left: 0; right: 0; text-align: center; color: #ff5252; font-weight: 700; font-size: 14px;">⚠️ PLEASE ENTER A NICKNAME TO PLAY</div>'
+    
+    st.markdown(f'<div class="menu-btn-container" style="margin-top: calc(15dvh); position: relative;">{alert_html}', unsafe_allow_html=True)
 
     # --- [7] CLEAN MINIMALIST NICKNAME ENTRY ---
     st.text_input("NICKNAME", 
@@ -654,6 +679,9 @@ def render_home():
                 placeholder="Enter nickname",
                 label_visibility="collapsed")
     
+    # Vertical Spacer for Gap
+    st.markdown('<div style="margin-bottom: 5dvh;"></div>', unsafe_allow_html=True)
+    
     st.button("PLAY GAME", on_click=start_game, use_container_width=True)
     st.button("TUTORIAL", on_click=go_tutorial, use_container_width=True)
     st.button("LEADERBOARD", on_click=go_leaderboard, use_container_width=True)
@@ -661,17 +689,17 @@ def render_home():
 
     # Privacy Disclaimer Footer
     st.markdown(f"""
-    <div style="margin-top: 8vh; padding: 15px; text-align: center; border-top: 1px solid #333; opacity: 0.5;">
-        <p style="font-size: 11px; color: #888; line-height: 1.4;">
+    <div style="position: fixed; bottom: 1vh; left: 0; right: 0; padding: 10px 15px; text-align: center; opacity: 0.4;">
+        <p style="font-size: 10px; color: #888; line-height: 1.4; margin: 0;">
             By playing, you agree to our <b>Privacy Policy</b> and data collection for global rankings and game analytics.<br>
-            <span style="font-size: 10px;">ID: {st.session_state.get('session_id', '???')}</span>
+            <span style="font-size: 9px;">ID: {st.session_state.get('session_id', '???')}</span>
         </p>
     </div>
     """, unsafe_allow_html=True)
     
     # Local bridge removed - now handled globally
 
-    components.html("""<script>
+    st.html("""<script>
     if(window.parent._kbClean) window.parent._kbClean();
     
     const p = window.parent.document;
@@ -709,7 +737,7 @@ def render_home():
         
         window.parent._hwSynced = true;
     }
-    </script>""", height=0, width=0)
+    </script>""")
 
 @st.fragment
 def render_gameplay_shard():
@@ -805,7 +833,7 @@ def render_gameplay_shard():
     js_code = js_code.replace("UNIQUE_ID", str(unique_id))
     
     # DYNAMIC RENDER: The unique_id in the script ensures it fresh environment
-    components.html(js_code, height=0, width=0)
+    st.html(js_code)
 
     # Cleanup state after render
     if st.session_state.get('feedback_state') != 'neutral':
@@ -820,7 +848,7 @@ def render_gameplay():
     st.button("timeout_trigger", key="ht", on_click=handle_timeout_js)
 
     # 3. Button Hider
-    components.html("""<script>
+    st.html("""<script>
     const p = window.parent.document;
     const loop = setInterval(() => {
         const b = Array.from(p.querySelectorAll('button')).find(btn => btn.textContent.trim()==='timeout_trigger');
@@ -829,7 +857,7 @@ def render_gameplay():
             clearInterval(loop);
         }
     }, 50);
-    </script>""", height=0, width=0)
+    </script>""")
     sync_hw_bridge()
 
 def render_game_over():
@@ -845,7 +873,7 @@ def render_game_over():
     st.button("Main Menu", use_container_width=True, on_click=go_home)
     st.markdown("</div>", unsafe_allow_html=True)
     
-    components.html("""<script>
+    st.html("""<script>
     const p = window.parent.document;
     if(window.parent._kbClean) window.parent._kbClean(); // Purge gameplay listener
     
@@ -857,7 +885,7 @@ def render_game_over():
     };
     p.addEventListener('keydown', goHandler);
     window.parent._kbGoClean = () => p.removeEventListener('keydown', goHandler);
-    </script>""", height=0, width=0)
+    </script>""")
 
 def render_tutorial():
     st.markdown(f"""
@@ -908,8 +936,42 @@ def render_tutorial():
 
 def render_leaderboard():
     nick = st.session_state.get('nickname')
-    top_entries, user_stats, total_players = fetch_leaderboard_data(nick)
+    session_score = st.session_state.get('total_score', 0)
+    top_entries, user_stats, total_players = fetch_leaderboard_data(nick, session_score)
     
+    # Optimistic merge: background thread may not have written the score yet,
+    # so inject the user's session score at the correct sorted position
+    if nick and session_score > 0 and top_entries:
+        # Find existing entry score (if any)
+        existing_score = 0
+        for e in top_entries:
+            if e.get('name') == nick:
+                existing_score = e.get('score', 0)
+                break
+        
+        # Only merge if session score is higher (avoid replacing a real high score)
+        if session_score >= existing_score:
+            # Remove stale entry
+            top_entries = [e for e in top_entries if e.get('name') != nick]
+            # Insert at correct sorted position
+            opt_entry = {'name': nick, 'score': session_score, 'level': math.ceil(session_score / 100)}
+            inserted = False
+            for i, entry in enumerate(top_entries):
+                if session_score >= entry.get('score', 0):
+                    top_entries.insert(i, opt_entry)
+                    inserted = True
+                    break
+            if not inserted:
+                top_entries.append(opt_entry)
+            top_entries = top_entries[:100]
+            
+            # Recalculate user_stats from merged list
+            user_stats = None
+            for i, e in enumerate(top_entries):
+                if e.get('name') == nick:
+                    user_stats = dict(e)
+                    user_stats['rank'] = i + 1
+                    break
     # Build the full leaderboard as a single block to avoid Streamlit ghost gaps
     leaderboard_html = f"""
     <div style="text-align: center; width: 100%; padding-bottom: 5px; border-bottom: 1px solid #333; margin-bottom: 10px;">
@@ -950,19 +1012,23 @@ def render_leaderboard():
             pts = f"{entry.get('score', 0):,}"
             lvl = f"{entry.get('level', 0)}"
             
-            table_html += f'<tr style="background:{bg}; border-bottom:1px solid #222;">'
+            row_id = ' id="rooty-user-row"' if is_me else ''
+            table_html += f'<tr{row_id} style="background:{bg}; border-bottom:1px solid #222;">'
             table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; font-weight:bold; width:10%; text-align:left;">{crown}</td>'
             table_html += f'<td style="padding:10px 6px; color:{color}; text-align:left; width:45%; white-space:nowrap; overflow:hidden;">{name_label}</td>'
             table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; text-align:center; width:25%; font-weight:bold;">{pts}</td>'
             table_html += f'<td style="padding:10px 6px; color:#888; text-align:center; width:20%;">{lvl}</td>'
             table_html += f'</tr>'
         
-        # Tail row for user
+        # Tail row for user outside top entries
         if not user_in_top and user_stats:
+            my_rank = user_stats.get("rank", "?")
             my_pts = f"{user_stats.get('score', 0):,}"
             my_lvl = f"{user_stats.get('level', 0)}"
-            table_html += f'<tr style="background:rgba(255, 213, 79, 0.1); border-top:1px dashed #444;">'
-            table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; font-weight:bold; width:10%; text-align:left;">{user_stats.get("rank", "?")}</td>'
+            # Spacer row to visually separate
+            table_html += f'<tr><td colspan="4" style="padding:4px; text-align:center; color:#444; font-size:10px; border-top:1px dashed #444;">&#8226; &#8226; &#8226;</td></tr>'
+            table_html += f'<tr id="rooty-user-row" style="background:rgba(255, 213, 79, 0.15);">'
+            table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; font-weight:bold; width:10%; text-align:left;">{my_rank}</td>'
             table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; text-align:left; width:45%;">{nick} (You)</td>'
             table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; text-align:center; width:25%; font-weight:bold;">{my_pts}</td>'
             table_html += f'<td style="padding:10px 6px; color:#888; text-align:center; width:20%;">{my_lvl}</td>'
@@ -973,6 +1039,21 @@ def render_leaderboard():
         leaderboard_html += '</div>'
     st.markdown(leaderboard_html, unsafe_allow_html=True)
     
+    # Auto-scroll to user's row
+    if nick and (user_stats or any(e.get('name') == nick for e in top_entries)):
+        st.html("""<script>
+        const p = window.parent.document;
+        setTimeout(() => {
+            const row = p.getElementById('rooty-user-row');
+            const scroller = p.getElementById('rooty-rank-scroller');
+            if (row && scroller) {
+                const rowTop = row.offsetTop - scroller.offsetTop;
+                const center = rowTop - (scroller.clientHeight / 2) + (row.clientHeight / 2);
+                scroller.scrollTo({ top: Math.max(0, center), behavior: 'smooth' });
+            }
+        }, 150);
+        </script>""")
+
     # Sticky Footer Buttons
     st.markdown('<div class="menu-btn-container" style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #333; width: 100%;">', unsafe_allow_html=True)
     st.button("MAIN MENU", on_click=go_home, use_container_width=True)
