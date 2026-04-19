@@ -911,9 +911,10 @@ def render_leaderboard():
     top_entries, user_stats, total_players = fetch_leaderboard_data(nick)
     
     # Build the full leaderboard as a single block to avoid Streamlit ghost gaps
+    leaderboard_html = f"""
     <div style="text-align: center; width: 100%; padding-bottom: 5px; border-bottom: 1px solid #333; margin-bottom: 10px;">
         <p style="color: {ROOTY_COLOR}; font-size: 24px; font-weight: 800; margin-bottom: 0;">Leaderboard</p>
-        <p style="color: #666; font-size: 10px;">Weekly Reset • {total_players:,} players</p>
+        <p style="color: #666; font-size: 10px;">Weekly Reset &bull; {total_players:,} players</p>
     </div>
     """
 
