@@ -113,14 +113,10 @@ def init_state():
     if 'total_score' not in st.session_state: st.session_state.total_score = 0
     if 'nickname' not in st.session_state: st.session_state.nickname = ""
     if 'nick_error' not in st.session_state: st.session_state.nick_error = False
-    if 'digit_counts' not in st.session_state: st.session_state.digit_counts = {}
     if 'round_start_time' not in st.session_state: st.session_state.round_start_time = time.time()
     if 'feedback_state' not in st.session_state: st.session_state.feedback_state = 'neutral'
     if 'round_log' not in st.session_state: st.session_state.round_log = []
     if 'max_digits_hit' not in st.session_state: st.session_state.max_digits_hit = 2
-    if 'curr_meta' not in st.session_state: 
-        n, m = generate_target_number(0)
-        if 'max_digits_hit' not in st.session_state: st.session_state.max_digits_hit = 2
     if 'current_game_id' not in st.session_state: st.session_state.current_game_id = ""
     if 'game_active' not in st.session_state: st.session_state.game_active = False
     init_analytics()
@@ -164,34 +160,6 @@ def background_log_sheets(summary, frozen_creds):
     """Bridge for sheets_logger to run safely in a thread with frozen creds"""
     sheets_logger.log_event(summary, frozen_creds)
 
-def background_submit_score(name, score, frozen_creds):
-    """Deep Background Score Submission: No UI blocking whatsoever"""
-    try:
-        if not frozen_creds:
-            # Fallback to local file if on Mac
-            JSON_KEY_PATH = "rooty-leaderboard-firebase-adminsdk-fbsvc-ebf80e2d1b.json"
-            if os.path.exists(JSON_KEY_PATH):
-                with open(JSON_KEY_PATH, "r") as f:
-                    frozen_creds = json.load(f)
-            else: return
-
-        db = firestore.Client(credentials=service_account.Credentials.from_service_account_info(frozen_creds))
-        cid = get_weekly_cid()
-        doc_ref = db.collection(cid).document(name)
-        existing = doc_ref.get()
-        
-        new_data = {
-            "name": name,
-            "score": score,
-            "level": math.ceil(score/100),
-            "ts_utc0": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "ts_local": datetime.datetime.now().isoformat()
-        }
-        
-        if not existing.exists or score > existing.to_dict().get('score', 0):
-            doc_ref.set(new_data)
-    except Exception:
-        traceback.print_exc()
 
 def get_weekly_cid():
     # ISO week starts on Monday. This ensures global sync at 00:00 UTC Monday.
@@ -336,10 +304,21 @@ def submit_score(name, score):
         # 1. ALWAYS log session end
         log_session_end("game_over")
 
-        # 2. Synchronous Score Submission (Ensures rank is ready for the next screen)
-        # We call the logic directly instead of in a thread
-        frozen_creds = get_frozen_creds()
-        background_submit_score(name, score, frozen_creds)
+        # 2. Fast Synchronous Score Submission (uses cached client, no new handshake)
+        db = get_db()
+        if db:
+            cid = get_weekly_cid()
+            doc_ref = db.collection(cid).document(name)
+            existing = doc_ref.get()
+            new_data = {
+                "name": name,
+                "score": score,
+                "level": math.ceil(score/100),
+                "ts_utc0": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "ts_local": datetime.datetime.now().isoformat()
+            }
+            if not existing.exists or score > existing.to_dict().get('score', 0):
+                doc_ref.set(new_data)
     except: pass
 
 def fetch_leaderboard_data(nickname):
@@ -377,14 +356,12 @@ def get_world_record():
     return 0
 
 def start_game():
-    # 1. Check for existing nickname (Persistence)
-    # If we are coming from Leaderboard, nickname_input might be missing, 
-    # but the 'nickname' state might be set.
-    current_nick = st.session_state.get('nickname', '').strip()
+    # 1. Resolve nickname: prefer what user just typed, fall back to stored value
     input_nick = st.session_state.get('nickname_input', '').strip()
+    current_nick = st.session_state.get('nickname', '').strip()
     
-    # 2. Validation Loop
-    final_nick = current_nick if current_nick else input_nick
+    # 2. Validation: input field wins if present (allows name changes)
+    final_nick = input_nick if input_nick else current_nick
     
     if not final_nick:
         st.session_state.game_status = 'home'
@@ -481,16 +458,14 @@ def handle_guess(guess):
         if INSTANT_GAME_OVER_ON_WRONG == 1: 
             submit_score(st.session_state.get('nickname'), st.session_state.total_score)
             st.session_state.game_status = 'leaderboard'
-            st.rerun()
         else: 
             st.session_state.round_start_time -= 0.5
 
 def handle_timeout_js():
-    """Triggered by the JS bridge when the 10s timer hits zero."""
+    """Triggered by the JS bridge when the timer hits zero."""
     submit_score(st.session_state.get('nickname'), st.session_state.total_score)
     st.session_state.game_status = 'leaderboard'
     st.session_state.feedback_state = 'incorrect'
-    st.rerun()
 
 # ==========================================
 # --- 5. UI STYLING & INJECTION ---
@@ -562,31 +537,6 @@ def inject_global_styles():
             box-shadow: 0 4px 10px rgba(0,0,0,0.3) !important;
         }
 
-        /* Large Prominent Nickname Input */
-        div[data-testid="stTextInput"] {
-            transform: translateY(3px) !important; /* Precision drop */
-        }
-        
-        div[data-testid="stTextInput"] input {
-            text-align: left !important;
-            font-size: 20px !important;
-            font-weight: 700 !important;
-            color: #888 !important; /* Modern Grey */
-            background: transparent !important;
-            border: none !important;
-            border-bottom: 2px solid #444 !important;
-            border-radius: 0 !important;
-        }
-
-        div[data-testid="stTextInput"] input::placeholder {
-            font-weight: 400 !important;
-            opacity: 0.5 !important;
-        }
-        
-        div[data-testid="stTextInput"] input:focus {
-            border-bottom: 2px solid #ffd54f !important;
-            box-shadow: none !important;
-        }
 
         /* Target Number & Flash FX */
         .challenge-number {
@@ -820,18 +770,17 @@ def render_gameplay_shard():
         st.button("6", key="n6", use_container_width=True, on_click=handle_guess, args=(6,))
         st.button("9", key="n9", use_container_width=True, on_click=handle_guess, args=(9,))
 
-    # JS BRIDGE: Timer, PB & Keys (Inside fragment to stay in sync)
+    # JS BRIDGE: Timer, PB & Keys (Dynamic key forces re-mount on new round)
     js_code = """<script>
     const p = window.parent.document;
-    const start = START_TIME;
-    const limit = LIMIT_TIME;
+    const remaining = REMAINING_TIME;
     
-    // 1. One-Shot Timer: Clears any old timer and set a fresh 10s one
-    if(window.parent._drTmr) window.parent.clearTimeout(window.parent._drTmr);
+    // 1. Clear stale timeouts, then set a new one using ACTUAL remaining time
+    if(window.parent._drTmr) clearTimeout(window.parent._drTmr);
     window.parent._drTmr = window.parent.setTimeout(() => {
         const b = Array.from(p.querySelectorAll('button')).find(btn => btn.textContent.trim()==='timeout_trigger');
         if(b) b.click();
-    }, limit * 1000);
+    }, Math.max(0, remaining * 1000));
 
     // 2. PB Update
     let pb = parseInt(window.localStorage.getItem('digitalRootPB') || '0', 10);
@@ -851,10 +800,11 @@ def render_gameplay_shard():
     p.addEventListener('keydown', kbHandler);
     window.parent._kbClean = () => p.removeEventListener('keydown', kbHandler);
     </script>"""
-    js_code = js_code.replace("START_TIME", str(st.session_state.round_start_time))
-    js_code = js_code.replace("LIMIT_TIME", str(TIME_LIMIT_SECONDS))
+    js_code = js_code.replace("REMAINING_TIME", str(round(remaining, 3)))
     js_code = js_code.replace("CURR_SCORE", str(st.session_state.total_score))
     js_code = js_code.replace("UNIQUE_ID", str(unique_id))
+    
+    # DYNAMIC RENDER: The unique_id in the script ensures it fresh environment
     components.html(js_code, height=0, width=0)
 
     # Cleanup state after render
@@ -958,20 +908,19 @@ def render_tutorial():
 
 def render_leaderboard():
     nick = st.session_state.get('nickname')
-    top_10, user_stats, total_players = fetch_leaderboard_data(nick)
+    top_entries, user_stats, total_players = fetch_leaderboard_data(nick)
     
     # Build the full leaderboard as a single block to avoid Streamlit ghost gaps
-    leaderboard_html = f"""
     <div style="text-align: center; width: 100%; padding-bottom: 5px; border-bottom: 1px solid #333; margin-bottom: 10px;">
         <p style="color: {ROOTY_COLOR}; font-size: 24px; font-weight: 800; margin-bottom: 0;">Leaderboard</p>
         <p style="color: #666; font-size: 10px;">Weekly Reset • {total_players:,} players</p>
     </div>
-    
-    <div id="rooty-rank-scroller" style="width: 95vw; height: 52dvh; overflow-y: scroll; -webkit-overflow-scrolling: touch; touch-action: pan-y !important; margin: 0 auto; background: #1a1a1a; border-radius: 8px; border: 1px solid #333;">
     """
 
-    if not top_10:
+    if not top_entries:
+        leaderboard_html += '<div style="width: 95vw; height: 52dvh; margin: 0 auto; background: #1a1a1a; border-radius: 8px; border: 1px solid #333;">'
         leaderboard_html += '<p style="text-align:center; padding: 20px; color:#444;">No entries yet!</p>'
+        leaderboard_html += '</div>'
     else:
         # [1] FIXED HEADER TABLE (Cannot be overlapped)
         leaderboard_html += f'<table style="width: 95vw; margin: 0 auto; border-collapse: collapse; font-family: monospace; font-size: 10px; background: #222; border-radius: 8px 8px 0 0; border: 1px solid #333; border-bottom: none;">'
@@ -982,15 +931,15 @@ def render_leaderboard():
         leaderboard_html += f'<th style="padding:10px 6px; text-align:center; width:20%;">Level</th>'
         leaderboard_html += f'</tr></table>'
         
-        # [2] SCROLLABLE BODY CONTAINER
+        # [2] SCROLLABLE BODY CONTAINER (single, unique ID)
         leaderboard_html += '<div id="rooty-rank-scroller" style="width: 95vw; height: 50dvh; overflow-y: scroll; -webkit-overflow-scrolling: touch; overscroll-behavior: contain !important; touch-action: pan-y !important; margin: 0 auto; background: #1a1a1a; border-radius: 0 0 8px 8px; border: 1px solid #333; border-top: 1px solid #222;">'
         
         table_html = '<table style="width:100%; border-collapse: collapse; font-family: monospace; font-size: 12px; border: none; margin-top: 0;">'
         
-        user_in_top_10 = False
-        for i, entry in enumerate(top_10):
+        user_in_top = False
+        for i, entry in enumerate(top_entries):
             is_me = nick and entry.get('name') == nick
-            if is_me: user_in_top_10 = True
+            if is_me: user_in_top = True
             
             bg = "rgba(255, 213, 79, 0.15)" if is_me else ("#1a1a1a" if i % 2 == 0 else "transparent")
             crown = "👑" if i == 0 else f"{i+1}"
@@ -1008,7 +957,7 @@ def render_leaderboard():
             table_html += f'</tr>'
         
         # Tail row for user
-        if not user_in_top_10 and user_stats:
+        if not user_in_top and user_stats:
             my_pts = f"{user_stats.get('score', 0):,}"
             my_lvl = f"{user_stats.get('level', 0)}"
             table_html += f'<tr style="background:rgba(255, 213, 79, 0.1); border-top:1px dashed #444;">'
@@ -1020,8 +969,7 @@ def render_leaderboard():
             
         table_html += '</table>'
         leaderboard_html += table_html
-
-    leaderboard_html += "</div>"
+        leaderboard_html += '</div>'
     st.markdown(leaderboard_html, unsafe_allow_html=True)
     
     # Sticky Footer Buttons
