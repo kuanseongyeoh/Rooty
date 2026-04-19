@@ -927,7 +927,7 @@ def render_tutorial():
             <div style="font-size: 16px;">736 &rarr; 16 &rarr; 1+6 = <b style="color: {ROOTY_COLOR};">7</b></div>
         </div>
     </div>
-    <div class="menu-btn-container">
+    <div class="menu-btn-container" style="margin-top: calc(5dvh); position: relative;">
     """, unsafe_allow_html=True)
     st.button("MAIN MENU", on_click=go_home, use_container_width=True)
     st.button("PLAY GAME", on_click=start_game, use_container_width=True)
@@ -975,8 +975,8 @@ def render_leaderboard():
     # Build the full leaderboard as a single block to avoid Streamlit ghost gaps
     leaderboard_html = f"""
     <div style="text-align: center; width: 100%; padding-bottom: 5px; border-bottom: 1px solid #333; margin-bottom: 10px;">
-        <p style="color: {ROOTY_COLOR}; font-size: 24px; font-weight: 800; margin-bottom: 0;">Leaderboard</p>
-        <p style="color: #666; font-size: 10px;">Weekly Reset &bull; {total_players:,} players</p>
+        <p style="color: {ROOTY_COLOR}; font-size: 40px; font-weight: 800; margin-bottom: 0;">Leaderboard</p>
+        <p style="color: #666; font-size: 15px;">Weekly Reset &bull; {total_players:,} players</p>
     </div>
     """
 
@@ -988,7 +988,7 @@ def render_leaderboard():
         # [1] FIXED HEADER TABLE (Cannot be overlapped)
         leaderboard_html += f'<table style="width: 95vw; margin: 0 auto; border-collapse: collapse; font-family: monospace; font-size: 10px; background: #222; border-radius: 8px 8px 0 0; border: 1px solid #333; border-bottom: none;">'
         leaderboard_html += f'<tr style="color:#666; text-transform:uppercase;">'
-        leaderboard_html += f'<th style="padding:10px 6px; text-align:left; width:10%;">#</th>'
+        leaderboard_html += f'<th style="padding:10px 6px; text-align:center; width:10%;">#</th>'
         leaderboard_html += f'<th style="padding:10px 6px; text-align:left; width:45%;">Name</th>'
         leaderboard_html += f'<th style="padding:10px 6px; text-align:center; width:25%;">Score</th>'
         leaderboard_html += f'<th style="padding:10px 6px; text-align:center; width:20%;">Level</th>'
@@ -1014,7 +1014,7 @@ def render_leaderboard():
             
             row_id = ' id="rooty-user-row"' if is_me else ''
             table_html += f'<tr{row_id} style="background:{bg}; border-bottom:1px solid #222;">'
-            table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; font-weight:bold; width:10%; text-align:left;">{crown}</td>'
+            table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; font-weight:bold; width:10%; text-align:center;">{crown}</td>'
             table_html += f'<td style="padding:10px 6px; color:{color}; text-align:left; width:45%; white-space:nowrap; overflow:hidden;">{name_label}</td>'
             table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; text-align:center; width:25%; font-weight:bold;">{pts}</td>'
             table_html += f'<td style="padding:10px 6px; color:#888; text-align:center; width:20%;">{lvl}</td>'
@@ -1028,7 +1028,7 @@ def render_leaderboard():
             # Spacer row to visually separate
             table_html += f'<tr><td colspan="4" style="padding:4px; text-align:center; color:#444; font-size:10px; border-top:1px dashed #444;">&#8226; &#8226; &#8226;</td></tr>'
             table_html += f'<tr id="rooty-user-row" style="background:rgba(255, 213, 79, 0.15);">'
-            table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; font-weight:bold; width:10%; text-align:left;">{my_rank}</td>'
+            table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; font-weight:bold; width:10%; text-align:center;">{my_rank}</td>'
             table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; text-align:left; width:45%;">{nick} (You)</td>'
             table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; text-align:center; width:25%; font-weight:bold;">{my_pts}</td>'
             table_html += f'<td style="padding:10px 6px; color:#888; text-align:center; width:20%;">{my_lvl}</td>'
