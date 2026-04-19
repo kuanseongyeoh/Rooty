@@ -195,12 +195,20 @@ def extract_ua_info():
         return {"raw_ua": ua}
     except: return {}
 
+def _bg_geo_lookup():
+    """Background thread to fetch geo info without blocking the UI."""
+    try:
+        st.session_state.geo = get_geo_info()
+    except: pass
+
 def init_analytics():
     if 'session_id' not in st.session_state:
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.device_id = f"gen_{st.session_state.session_id[:8]}" 
-        st.session_state.geo = get_geo_info()
+        st.session_state.geo = {} # Start empty
         st.session_state.hw_specs = extract_ua_info()
+        # Launch geo lookup in background so it doesn't block the "Play Game" button
+        threading.Thread(target=_bg_geo_lookup, daemon=True).start()
 
 def log_session_start():
     db = get_db()
@@ -515,6 +523,17 @@ def inject_global_styles():
         /* [1.5] NUKE GHOST MARGINS: Stop Streamlit from adding random 1rem gaps */
         [data-testid="stVerticalBlock"] > div { margin: 0 !important; padding: 0 !important; }
         [data-testid="stVerticalBlock"] { gap: 0 !important; }
+
+        /* [1.6] SILENCE THE SPINNER: Hide the 'Running' indicator and Header */
+        header, [data-testid="stHeader"] { 
+            visibility: hidden !important; 
+            height: 0 !important; 
+            padding: 0 !important; 
+            display: none !important;
+        }
+        .stStatusWidget, [data-testid="stStatusWidget"] { 
+            display: none !important; 
+        }
 
         /* [2] DIALPAD GRID: Force exact 3-column array with zero gaps or padding */
         div[data-testid="stHorizontalBlock"] {
