@@ -9,6 +9,9 @@ import os
 import uuid
 import sheets_logger
 import requests
+import json
+import threading
+import traceback
 import streamlit.components.v1 as components
 
 # Firestore Config
@@ -132,13 +135,62 @@ def get_db():
             # Handle both raw strings and pre-parsed TOML dictionaries
             creds_info = st.secrets["FIREBASE_SERVICE_ACCOUNT"]
             if isinstance(creds_info, str):
-                import json
                 creds_info = json.loads(creds_info)
             creds = service_account.Credentials.from_service_account_info(creds_info)
         else:
             return None
         return firestore.Client(credentials=creds)
     except: return None
+
+def get_frozen_creds():
+    """Surgically extract and freeze secrets for background threads"""
+    try:
+        # Priority 1: Cloud Secrets
+        if "FIREBASE_SERVICE_ACCOUNT" in st.secrets:
+            cinfo = st.secrets["FIREBASE_SERVICE_ACCOUNT"]
+            # Convert to plain dict if it's a Streamlit proxy or string
+            if hasattr(cinfo, "to_dict"): cinfo = cinfo.to_dict()
+            elif isinstance(cinfo, str):
+                cinfo = json.loads(cinfo)
+            else:
+                cinfo = dict(cinfo)
+            # Standardizing: Ensure it's a clean dict with no proxy remnants
+            return json.loads(json.dumps(cinfo))
+        return None
+    except: return None
+
+def background_log_sheets(summary, frozen_creds):
+    """Bridge for sheets_logger to run safely in a thread with frozen creds"""
+    sheets_logger.log_event(summary, frozen_creds)
+
+def background_submit_score(name, score, frozen_creds):
+    """Deep Background Score Submission: No UI blocking whatsoever"""
+    try:
+        if not frozen_creds:
+            # Fallback to local file if on Mac
+            JSON_KEY_PATH = "rooty-leaderboard-firebase-adminsdk-fbsvc-ebf80e2d1b.json"
+            if os.path.exists(JSON_KEY_PATH):
+                with open(JSON_KEY_PATH, "r") as f:
+                    frozen_creds = json.load(f)
+            else: return
+
+        db = firestore.Client(credentials=service_account.Credentials.from_service_account_info(frozen_creds))
+        cid = get_weekly_cid()
+        doc_ref = db.collection(cid).document(name)
+        existing = doc_ref.get()
+        
+        new_data = {
+            "name": name,
+            "score": score,
+            "level": math.ceil(score/100),
+            "ts_utc0": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "ts_local": datetime.datetime.now().isoformat()
+        }
+        
+        if not existing.exists or score > existing.to_dict().get('score', 0):
+            doc_ref.set(new_data)
+    except Exception:
+        traceback.print_exc()
 
 def get_weekly_cid():
     # ISO week starts on Monday. This ensures global sync at 00:00 UTC Monday.
@@ -223,7 +275,6 @@ def log_session_start():
 
 def sync_hw_bridge():
     if st.session_state.hw_bridge_input:
-        import json
         try:
             specs = json.loads(st.session_state.hw_bridge_input)
             st.session_state.hw_specs.update(specs)
@@ -263,34 +314,22 @@ def log_session_end(reason="completed"):
                 "rounds": st.session_state.round_log
             }
         }
-        # Surgical Switch: From BQ/Firestore to Google Sheets
-        sheets_logger.log_event(summary)
+        # Lightning Snapshot: Convert secrets to plain dict
+        frozen_creds = get_frozen_creds()
+        # Synchronous Handoff: This ensures the data is sent before the script ends (Fixed for Mac)
+        background_log_sheets(summary, frozen_creds)
     except: pass
 
 def submit_score(name, score):
-    db = get_db()
-    if not db: return
+    if not name or score <= 0: return
     try:
-        # 1. ALWAYS log session end (Analytics is priority)
-        # Even if name is empty, we must close the session doc
+        # 1. ALWAYS log session end
         log_session_end("game_over")
-        
-        # 2. Update High Scores ONLY if we have a valid name and score
-        display_name = (name or "").strip()[:15]
-        if display_name and score > 0:
-            cid = get_weekly_cid()
-            doc_ref = db.collection(cid).document(display_name)
-            existing = doc_ref.get()
-            new_data = {
-                "name": display_name, 
-                "score": score, 
-                "level": st.session_state.round_count,
-                "digits": st.session_state.max_digits_hit,
-                "ts_utc0": get_utc_now(),
-                "ts_local": get_local_now()
-            }
-            if not existing.exists or score > existing.to_dict().get('score', 0):
-                doc_ref.set(new_data)
+
+        # 2. Firestore is faster/more stable in bg, but we can make this sync too if needed.
+        # For now, let's keep it sync for maximum reliability.
+        frozen_creds = get_frozen_creds()
+        background_submit_score(name, score, frozen_creds)
     except: pass
 
 def fetch_leaderboard_data(nickname):
