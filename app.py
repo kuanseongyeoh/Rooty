@@ -1,4 +1,5 @@
 import streamlit as st
+import textwrap
 from google.cloud import firestore
 from google.oauth2 import service_account
 import datetime
@@ -265,12 +266,17 @@ def log_session_end(reason="completed"):
         
         doc_ref = db.collection("sessions").document(st.session_state.current_game_id)
         
-        # Build a complete summary that includes identity for the spreadsheet
+        # Build a complete summary that includes identity and environment for the spreadsheet
         summary = {
             "id": {
                 "game_id": st.session_state.current_game_id,
                 "session_id": st.session_state.session_id,
                 "nickname": st.session_state.nickname
+            },
+            "env": {
+                "device_id": st.session_state.get('device_id', 'unknown'),
+                "geo": st.session_state.get('geo', {}),
+                "hw": st.session_state.hw_specs
             },
             "timing": {
                 "end_ts_utc0": end_time_str,
@@ -305,8 +311,8 @@ def _bg_submit_score(name, score):
             "name": name,
             "score": score,
             "level": math.ceil(score/100),
-            "ts_utc0": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "ts_local": datetime.datetime.now().isoformat()
+            "ts_utc0": get_utc_now(),
+            "ts_local": get_local_now()
         }
         if not existing.exists or score > existing.to_dict().get('score', 0):
             doc_ref.set(new_data)
@@ -540,6 +546,12 @@ def inject_global_styles():
             align-items: center !important;
         }
 
+        /* [3.1] Target the actual text label inside the buttons */
+        div[data-testid="stHorizontalBlock"] button p {
+            font-size: 32px !important;
+            font-weight: 800 !important;
+        }
+
         /* [4] MENU CONTAINER: All children share centered layout */
         .menu-btn-container div[data-testid="stButton"] button,
         .menu-btn-container div[data-testid="stTextInput"] {
@@ -661,16 +673,16 @@ def inject_global_styles():
 # ==========================================
 def render_home():
     st.markdown(f"""
-    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; margin-top: 0; width: 100%;">
-        <p style="color: {ROOTY_COLOR}; font-size: 15vw; margin: 0; font-weight: 800; line-height: 1;">Rooty!</p>
-        <p style="color: #888; font-size: 5vw; margin: 0; margin-bottom: 1dvh;">Challenge the Math</p>
+    <div style="text-align: center; margin-top: 5vh; width: 100%;">
+        <p style="color: {ROOTY_COLOR}; font-size: 24vw; margin: 0; font-weight: 800; line-height: 1; letter-spacing: -0.05em;">Rooty!</p>
+        <p style="color: #FFF; font-size: 5vw; margin: 0; margin-top: 5px;">Challenge the Math</p>
     </div>
     """, unsafe_allow_html=True)
 
     # Nickname Error Alert (Floating ABOVE the container to avoid shifting layout)
     alert_html = ""
     if st.session_state.get('nick_error'):
-        alert_html = '<div style="position: absolute; top: -40px; left: 0; right: 0; text-align: center; color: #ff5252; font-weight: 700; font-size: 14px;">⚠️ PLEASE ENTER A NICKNAME TO PLAY</div>'
+        alert_html = '<div style="position: absolute; top: -40px; left: 0; right: 0; text-align: center; color: #ff5252; font-weight: 700; font-size: 12px;">⚠️ PLEASE ENTER A NICKNAME TO PLAY</div>'
     
     st.markdown(f'<div class="menu-btn-container" style="margin-top: calc(15dvh); position: relative;">{alert_html}', unsafe_allow_html=True)
 
@@ -698,50 +710,6 @@ def render_home():
         </p>
     </div>
     """, unsafe_allow_html=True)
-    
-    # Local bridge removed - now handled globally
-
-    components.html("""<script>
-    if(window.parent._kbClean) window.parent._kbClean();
-    
-    const p = window.parent.document;
-    
-    try {
-        const currentNick = p.getElementById('nick-display-source')?.innerText || "";
-        if(currentNick) localStorage.setItem('rootyNick', currentNick);
-        
-        let deviceId = localStorage.getItem('rootyDeviceId');
-        if(!deviceId) {
-            deviceId = 'dev_' + Math.random().toString(36).substr(2, 9);
-            localStorage.setItem('rootyDeviceId', deviceId);
-        }
-    } catch(e) { console.warn("Rooty: local persistence blocked"); }
-    
-    if(!window.parent._hwSynced) {
-        const specs = {
-            screen: `${window.screen.width}x${window.screen.height}`,
-            viewport: `${window.innerWidth}x${window.innerHeight}`,
-            ratio: window.devicePixelRatio,
-            cores: navigator.hardwareConcurrency || "unknown",
-            platform: navigator.platform,
-            vendor: navigator.vendor,
-            touch_points: navigator.maxTouchPoints,
-            lang: navigator.languages ? navigator.languages.join(',') : navigator.language,
-            did: deviceId
-        };
-        
-        // Push to Python Bridge
-        const bridge = p.querySelector('input[aria-label="HW_BRIDGE"]');
-        if(bridge) {
-            const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
-            nativeInputValueSetter.call(bridge, JSON.stringify(specs));
-            bridge.dispatchEvent(new Event('input', { bubbles: true }));
-            bridge.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-        
-        window.parent._hwSynced = true;
-    }
-    </script>""", height=0, width=0)
 
 @st.fragment
 def render_gameplay_shard():
@@ -847,6 +815,7 @@ def render_gameplay_shard():
 
 def render_gameplay():
     """MAIN APP LAYER: Fixed-position elements (Sentry)."""
+    sync_hw_bridge()
     # 1. High-speed shard
     render_gameplay_shard()
 
@@ -864,14 +833,13 @@ def render_gameplay():
         }
     }, 50);
     </script>""", height=0, width=0)
-    sync_hw_bridge()
 
 def render_game_over():
     st.markdown(f"""
-    <div style="text-align: center; margin-top: 15vh; width: 100%;">
-        <h1 style="color: {GAME_OVER_COLOR}; font-size: 15vw; font-weight: 700;">Game Over</h1>
-        <h2 style="color: {GAME_OVER_COLOR}; font-size: 11vw; font-weight: 900;">{st.session_state.total_score:,} PTS</h2>
-        <p style="color: #888; font-size: 4vw; margin-bottom: 5vh;">Rounds Cleared: {st.session_state.round_count}</p>
+    <div style="text-align: center; margin-top: 2vh; width: 100%;">
+        <h1 style="color: {GAME_OVER_COLOR}; font-size: 15vw; font-weight: 700; margin: 0;">Game Over</h1>
+        <h2 style="color: {GAME_OVER_COLOR}; font-size: 11vw; font-weight: 900; margin: 0;">{st.session_state.total_score:,} PTS</h2>
+        <p style="color: #888; font-size: 4vw; margin-top: 5px;">Rounds Cleared: {st.session_state.round_count}</p>
     </div>
     <div class="menu-btn-container">
     """, unsafe_allow_html=True)
@@ -894,12 +862,13 @@ def render_game_over():
     </script>""", height=0, width=0)
 
 def render_tutorial():
-    st.markdown(f"""
-    <div style="text-align: center; margin-top: 0vh; width: 100%;">
+    sync_hw_bridge()
+    st.markdown(textwrap.dedent(f"""
+    <div style="text-align: center; margin-top: 5vh; width: 100%;">
         <h2 style="color: {ROOTY_COLOR}; font-size: 8vw; margin-bottom: 1.5vh; font-weight: 800;">How to Play</h2>
     </div>
     
-    <div style="width: 90vw; margin: 0 auto; margin-bottom: 1.5vh; color: #eee; font-size: 13px; line-height: 1.2;">
+    <div style="width: 90vw; margin: 0 auto; margin-bottom: 3vh; color: #eee; font-size: 15px; line-height: 1.2;">
         <div style="display: flex; align-items: flex-start; margin-bottom: 6px;">
             <div style="margin-right: 10px;">🎯</div>
             <div><b>Sum it Up</b>: Squash digits until only 1 remains!</div>
@@ -922,7 +891,7 @@ def render_tutorial():
         </div>
     </div>
 
-    <div style="width: 85vw; margin: 0 auto; color: #ccc; font-family: monospace;">
+    <div style="width: 85vw; margin: 0; margin-bottom: 3vh; color: #FFF; font-family: monospace;">
         <div style="background: #222; padding: 10px 15px; border-radius: 10px; margin-bottom: 0.8vh; border-left: 4px solid {ROOTY_COLOR};">
             <div style="font-size: 16px;">35 &rarr; 3+5 = <b style="color: {ROOTY_COLOR};">8</b></div>
         </div>
@@ -933,15 +902,16 @@ def render_tutorial():
             <div style="font-size: 16px;">736 &rarr; 16 &rarr; 1+6 = <b style="color: {ROOTY_COLOR};">7</b></div>
         </div>
     </div>
-    <div class="menu-btn-container" style="margin-top: calc(5dvh); position: relative;">
-    """, unsafe_allow_html=True)
+    <div class="menu-btn-container" style="position: relative;">
+    """).strip(), unsafe_allow_html=True)
     st.button("MAIN MENU", on_click=go_home, use_container_width=True)
     st.button("PLAY GAME", on_click=start_game, use_container_width=True)
     st.button("LEADERBOARD", on_click=go_leaderboard, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 def render_leaderboard():
-    nick = st.session_state.get('nickname')
+    sync_hw_bridge()
+    nick = st.session_state.get('nickname', '')
     session_score = st.session_state.get('total_score', 0)
     top_entries, user_stats, total_players = fetch_leaderboard_data(nick, session_score)
     
@@ -979,31 +949,41 @@ def render_leaderboard():
                     user_stats['rank'] = i + 1
                     break
     # Build the full leaderboard as a single block to avoid Streamlit ghost gaps
-    leaderboard_html = f"""
+    leaderboard_html = textwrap.dedent(f"""
     <div style="text-align: center; width: 100%; padding-bottom: 5px; border-bottom: 1px solid #333; margin-bottom: 10px;">
         <p style="color: {ROOTY_COLOR}; font-size: 40px; font-weight: 800; margin-bottom: 0;">Leaderboard</p>
-        <p style="color: #666; font-size: 15px;">Weekly Reset &bull; {total_players:,} players</p>
+        <p style="color: #FFF; font-size: 15px;">Weekly Reset &bull; {total_players:,} players</p>
     </div>
-    """
+    """).strip()
 
     if not top_entries:
         leaderboard_html += '<div style="width: 95vw; height: 52dvh; margin: 0 auto; background: #1a1a1a; border-radius: 8px; border: 1px solid #333;">'
         leaderboard_html += '<p style="text-align:center; padding: 20px; color:#444;">No entries yet!</p>'
         leaderboard_html += '</div>'
     else:
-        # [1] FIXED HEADER TABLE (Cannot be overlapped)
-        leaderboard_html += f'<table style="width: 95vw; margin: 0 auto; border-collapse: collapse; font-family: monospace; font-size: 10px; background: #222; border-radius: 8px 8px 0 0; border: 1px solid #333; border-bottom: none;">'
-        leaderboard_html += f'<tr style="color:#666; text-transform:uppercase;">'
-        leaderboard_html += f'<th style="padding:10px 6px; text-align:center; width:10%;">#</th>'
-        leaderboard_html += f'<th style="padding:10px 6px; text-align:left; width:45%;">Name</th>'
-        leaderboard_html += f'<th style="padding:10px 6px; text-align:center; width:25%;">Score</th>'
-        leaderboard_html += f'<th style="padding:10px 6px; text-align:center; width:20%;">Level</th>'
-        leaderboard_html += f'</tr></table>'
-        
-        # [2] SCROLLABLE BODY CONTAINER (single, unique ID)
-        leaderboard_html += '<div id="rooty-rank-scroller" style="width: 95vw; height: 50dvh; overflow-y: scroll; -webkit-overflow-scrolling: touch; overscroll-behavior: contain !important; touch-action: pan-y !important; margin: 0 auto; background: #1a1a1a; border-radius: 0 0 8px 8px; border: 1px solid #333; border-top: 1px solid #222;">'
-        
-        table_html = '<table style="width:100%; border-collapse: collapse; font-family: monospace; font-size: 12px; border: none; margin-top: 0;">'
+        # [1] MASTER TABLE CONTAINER (Single scroller, sticky header)
+        leaderboard_html += textwrap.dedent(f"""
+        <div id="rooty-rank-scroller" style="
+            width: 90vw; 
+            height: 50dvh; 
+            overflow-y: auto; 
+            -webkit-overflow-scrolling: touch; 
+            margin: 0 auto; 
+            background: #1a1a1a; 
+            border-radius: 8px; 
+            border: 1px solid #333;
+        ">
+        <table style="width: 100%; border-collapse: collapse; font-family: monospace; font-size: 12px; table-layout: fixed;">
+            <thead>
+                <tr style="color:#FFFFFF; text-transform:uppercase; background: #222; position: sticky; top: 0; z-index: 10; border-bottom: 2px solid #333;">
+                    <th style="padding:10px 6px; text-align:center; width:10%;">#</th>
+                    <th style="padding:10px 6px 10px 15px; text-align:left; width:40%;">Nickname</th>
+                    <th style="padding:10px 6px; text-align:center; width:35%;">Score</th>
+                    <th style="padding:10px 6px; text-align:center; width:15%;">Level</th>
+                </tr>
+            </thead>
+            <tbody>
+        """).strip()
         
         user_in_top = False
         for i, entry in enumerate(top_entries):
@@ -1012,37 +992,41 @@ def render_leaderboard():
             
             bg = "rgba(255, 213, 79, 0.15)" if is_me else ("#1a1a1a" if i % 2 == 0 else "transparent")
             crown = "👑" if i == 0 else f"{i+1}"
-            color = ROOTY_COLOR if (i == 0 or is_me) else "#ccc"
+            color = ROOTY_COLOR if (i == 0 or is_me) else "#FFF"
             name_label = f"{entry.get('name', 'Anon')[:15]}{' (You)' if is_me else ''}"
             
             pts = f"{entry.get('score', 0):,}"
             lvl = f"{entry.get('level', 0)}"
             
             row_id = ' id="rooty-user-row"' if is_me else ''
-            table_html += f'<tr{row_id} style="background:{bg}; border-bottom:1px solid #222;">'
-            table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; font-weight:bold; width:10%; text-align:center;">{crown}</td>'
-            table_html += f'<td style="padding:10px 6px; color:{color}; text-align:left; width:45%; white-space:nowrap; overflow:hidden;">{name_label}</td>'
-            table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; text-align:center; width:25%; font-weight:bold;">{pts}</td>'
-            table_html += f'<td style="padding:10px 6px; color:#888; text-align:center; width:20%;">{lvl}</td>'
-            table_html += f'</tr>'
+            leaderboard_html += textwrap.dedent(f"""
+                <tr{row_id} style="background:{bg}; border-bottom:1px solid #222;">
+                    <td style="padding:10px 6px; color:{ROOTY_COLOR}; font-weight:bold; width:10%; text-align:center;">{crown}</td>
+                    <td style="padding:10px 6px 10px 15px; color:{color}; text-align:left; width:40%; white-space:nowrap; overflow:hidden;">{name_label}</td>
+                    <td style="padding:10px 6px; color:{ROOTY_COLOR}; text-align:center; width:35%; font-weight:bold;">{pts}</td>
+                    <td style="padding:10px 6px; color:#FFF; text-align:center; width:15%;">{lvl}</td>
+                </tr>
+            """).strip()
         
         # Tail row for user outside top entries
         if not user_in_top and user_stats:
             my_rank = user_stats.get("rank", "?")
             my_pts = f"{user_stats.get('score', 0):,}"
             my_lvl = f"{user_stats.get('level', 0)}"
-            # Spacer row to visually separate
-            table_html += f'<tr><td colspan="4" style="padding:4px; text-align:center; color:#444; font-size:10px; border-top:1px dashed #444;">&#8226; &#8226; &#8226;</td></tr>'
-            table_html += f'<tr id="rooty-user-row" style="background:rgba(255, 213, 79, 0.15);">'
-            table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; font-weight:bold; width:10%; text-align:center;">{my_rank}</td>'
-            table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; text-align:left; width:45%;">{nick} (You)</td>'
-            table_html += f'<td style="padding:10px 6px; color:{ROOTY_COLOR}; text-align:center; width:25%; font-weight:bold;">{my_pts}</td>'
-            table_html += f'<td style="padding:10px 6px; color:#888; text-align:center; width:20%;">{my_lvl}</td>'
-            table_html += f'</tr>'
             
-        table_html += '</table>'
-        leaderboard_html += table_html
-        leaderboard_html += '</div>'
+            leaderboard_html += textwrap.dedent(f"""
+                <tr><td colspan="4" style="padding:4px; text-align:center; color:#444; font-size:10px; border-top:1px dashed #444;">&#8226; &#8226; &#8226;</td></tr>
+                <tr id="rooty-user-row" style="background:rgba(255, 213, 79, 0.15);">
+                    <td style="padding:10px 6px; color:{ROOTY_COLOR}; font-weight:bold; width:10%; text-align:center;">{my_rank}</td>
+                    <td style="padding:10px 6px 10px 15px; color:{ROOTY_COLOR}; text-align:left; width:40%;">{nick} (You)</td>
+                    <td style="padding:10px 6px; color:{ROOTY_COLOR}; text-align:center; width:35%; font-weight:bold;">{my_pts}</td>
+                    <td style="padding:10px 6px; color:#FFF; text-align:center; width:15%;">{my_lvl}</td>
+                </tr>
+            """).strip()
+            
+        leaderboard_html += '</tbody></table></div>'
+    
+    # No more cleanup needed here as each block was dedented individually
     st.markdown(leaderboard_html, unsafe_allow_html=True)
     
     # Auto-scroll to user's row
@@ -1061,7 +1045,7 @@ def render_leaderboard():
         </script>""", height=0, width=0)
 
     # Sticky Footer Buttons
-    st.markdown('<div class="menu-btn-container" style="margin-top: 15px; padding-top: 10px; border-top: 1px solid #333; width: 100%;">', unsafe_allow_html=True)
+    st.markdown('<div class="menu-btn-container" style="margin-top: 30px; padding-top: 10px; border-top: 1px solid #333; width: 100%;">', unsafe_allow_html=True)
     st.button("MAIN MENU", on_click=go_home, use_container_width=True)
     st.button("PLAY GAME", on_click=start_game, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
@@ -1070,6 +1054,10 @@ def render_leaderboard():
 # --- 7. MAIN MASTER NAVIGATOR ---
 # ==========================================
 st.set_page_config(page_title="Rooty!", layout="centered")
+
+# Hidden Global Analytics Bridge (Data processed via sync_hw_bridge)
+st.text_input("HW_BRIDGE", key="hw_bridge_input", on_change=sync_hw_bridge, label_visibility="collapsed")
+
 init_state()
 inject_global_styles()
 
@@ -1083,8 +1071,5 @@ elif st.session_state.game_status == 'tutorial':
     render_tutorial()
 elif st.session_state.game_status == 'leaderboard':
     render_leaderboard()
-
-# Hidden Global Analytics Bridge (Data processed via sync_hw_bridge)
-st.text_input("HW_BRIDGE", key="hw_bridge_input", on_change=sync_hw_bridge, label_visibility="collapsed")
 
 app = None
