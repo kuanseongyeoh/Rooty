@@ -44,6 +44,11 @@ def calculate_digital_root(number):
         return 0
     return 1 + (number - 1) % 9
 
+def get_current_time_limit():
+    """Calculates time allowance: 5s base for 2 digits, +0.5s per extra digit."""
+    digits = st.session_state.curr_meta.get('digits', 2)
+    return TIME_LIMIT_SECONDS + (digits - 2) * 0.5
+
 def generate_target_number(round_count):
     GAME_CONFIG = {
         2: [{"max_round": 1, "pool": (0, 9), "sum": (1, 9)}, {"max_round": 2, "pool": (0, 9)}],
@@ -105,6 +110,14 @@ def generate_target_number(round_count):
         }
         return int(num_str), meta
 
+def generate_practice_number(digits):
+    """Simple generator for practice mode: random digits with no progression rules."""
+    num_str = ""
+    for i in range(digits):
+        d_min = 1 if i == 0 else 0
+        num_str += str(random.randint(d_min, 9))
+    return int(num_str), {"digits": digits}
+
 # ==========================================
 # --- 3. STATE & NAVIGATION HELPERS ---
 # ==========================================
@@ -120,6 +133,7 @@ def init_state():
     if 'max_digits_hit' not in st.session_state: st.session_state.max_digits_hit = 2
     if 'current_game_id' not in st.session_state: st.session_state.current_game_id = ""
     if 'game_active' not in st.session_state: st.session_state.game_active = False
+    if 'practice_digits' not in st.session_state: st.session_state.practice_digits = 2
     init_analytics()
 
 @st.cache_resource
@@ -428,6 +442,20 @@ def go_tutorial():
 def go_leaderboard():
     st.session_state.game_status = 'leaderboard'
 
+def go_practice():
+    st.session_state.game_status = 'practice'
+    if not st.session_state.get('target_number'):
+        n, m = generate_practice_number(st.session_state.get('practice_digits', 2))
+        st.session_state.target_number = n
+        st.session_state.curr_meta = m
+
+def set_practice_digits(d):
+    st.session_state.practice_digits = d
+    n, m = generate_practice_number(d)
+    st.session_state.target_number = n
+    st.session_state.curr_meta = m
+    st.session_state.feedback_state = 'neutral'
+
 def set_nickname():
     if st.session_state.nick_input:
         st.session_state.nickname = st.session_state.nick_input[:15]
@@ -436,8 +464,20 @@ def set_nickname():
 # --- 4. CALLBACKS & EVENT HANDLERS ---
 # ==========================================
 def handle_guess(guess):
+    if st.session_state.game_status == 'practice':
+        expected = calculate_digital_root(st.session_state.target_number)
+        if guess == expected:
+            st.session_state.feedback_state = 'correct'
+            n, m = generate_practice_number(st.session_state.practice_digits)
+            st.session_state.target_number = n
+            st.session_state.curr_meta = m
+        else:
+            st.session_state.feedback_state = 'incorrect'
+        return
+
+    limit = get_current_time_limit()
     elapsed = time.time() - st.session_state.round_start_time
-    is_timeout = elapsed > (TIME_LIMIT_SECONDS + LATENCY_GRACE_PERIOD)
+    is_timeout = elapsed > (limit + LATENCY_GRACE_PERIOD)
     expected = calculate_digital_root(st.session_state.target_number)
     
     if is_timeout:
@@ -460,7 +500,8 @@ def handle_guess(guess):
         # Score calculation: 10 pts base * digits multiplier * speed bonus
         digits = st.session_state.curr_meta['digits']
         base = 10 * (2**(digits-2))
-        speed = max(1.0, (TIME_LIMIT_SECONDS - elapsed))
+        limit = get_current_time_limit()
+        speed = max(1.0, (limit - elapsed))
         st.session_state.total_score += math.ceil(base * speed)
         
         st.session_state.round_count += 1
@@ -715,7 +756,8 @@ def render_home():
     # Vertical Spacer for Gap
     st.markdown('<div style="margin-bottom: 5dvh;"></div>', unsafe_allow_html=True)
     
-    st.button("PLAY GAME", on_click=start_game, use_container_width=True)
+    st.button("PLAY GAME", on_click=start_game, use_container_width=True, type="primary")
+    st.button("PRACTICE MODE", on_click=go_practice, use_container_width=True)
     st.button("TUTORIAL", on_click=go_tutorial, use_container_width=True)
     st.button("LEADERBOARD", on_click=go_leaderboard, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
@@ -734,9 +776,10 @@ def render_home():
 def render_gameplay_shard():
     """HIGH-SPEED FRAGMENT: Handles the keypad, challenge display, and score HUD."""
     unique_id = random.randint(100000, 999999)
+    limit = get_current_time_limit()
     elapsed = time.time() - st.session_state.round_start_time
-    remaining = max(0, TIME_LIMIT_SECONDS - elapsed)
-    fraction = min(1.0, elapsed / TIME_LIMIT_SECONDS)
+    remaining = max(0, limit - elapsed)
+    fraction = min(1.0, elapsed / limit)
     current_feedback = st.session_state.get('feedback_state', 'neutral')
     
     # HUD & Target
@@ -928,6 +971,113 @@ def render_tutorial():
     st.button("LEADERBOARD", on_click=go_leaderboard, use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
+@st.fragment
+def render_practice_shard():
+    """HIGH-SPEED FRAGMENT: Practice mode layout."""
+    unique_id = random.randint(100000, 999999)
+    current_feedback = st.session_state.get('feedback_state', 'neutral')
+    
+    # Digit Selector HUD
+    st.markdown(f"""
+    <style>
+        @keyframes flashG_{unique_id} {{ 0%, 100% {{ background: transparent; }} 50% {{ background: #2e7d32; }} }}
+        @keyframes flashR_{unique_id} {{ 0%, 100% {{ background: transparent; }} 50% {{ background: #c62828; }} }}
+        .flash-correct {{ animation: flashG_{unique_id} 0.8s; }}
+        .flash-incorrect {{ animation: flashR_{unique_id} 0.8s; }}
+
+        /* SURGICAL LOCAL OVERRIDE: Forces Practice buttons into one row without st.columns */
+        #practice-pill-box {{
+            width: 100%; text-align: center; margin: 10px 0; display: block;
+        }}
+        #practice-pill-box div[data-testid="stButton"] {{
+            display: inline-block !important; width: 14vw !important; margin: 0 4px !important;
+        }}
+        #practice-pill-box button {{
+            height: 6dvh !important; border-radius: 12px !important; background: #222 !important; border: 1.5px solid #444 !important;
+        }}
+        #practice-pill-box button p {{
+            font-size: 20px !important; font-weight: 800 !important; color: white !important;
+        }}
+        /* Active highlight */
+        #practice-pill-box .active-pill button {{
+            background: {ROOTY_COLOR} !important; border-color: {ROOTY_COLOR} !important;
+        }}
+        #practice-pill-box .active-pill button p {{
+            color: #1a1a1a !important;
+        }}
+    </style>
+    <div style="width: 100%; text-align: center; margin-bottom: 5px;">
+        <div style="color: {HUD_LABEL_COLOR}; font-size: 28px; font-weight: 800; text-transform: uppercase;">Practice Mode</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # NATIVE PILLS: Rendered individually and floated into a row via local CSS
+    st.markdown('<div id="practice-pill-box">', unsafe_allow_html=True)
+    for d in range(2, 8):
+        is_active = st.session_state.practice_digits == d
+        st.markdown(f'<div class="{"active-pill" if is_active else ""}">', unsafe_allow_html=True)
+        # Use a very specific key "LEN_x" to avoid confusion with the answer keys
+        st.button(str(d), key=f"LEN_{d}_{unique_id}", on_click=set_practice_digits, args=(d,))
+        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <div style="width: 100%; text-align: center; margin-top: 15px; --target-font: min(9vw, 9vh, 70px);">
+        <div class="challenge-number {'flash-correct' if current_feedback=='correct' else 'flash-incorrect' if current_feedback=='incorrect' else ''}" 
+             style="margin-bottom: 20px;">
+            {st.session_state.target_number}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Keypad (Uses original handle_guess for answers)
+    kcols = st.columns(3)
+    with kcols[0]:
+        st.button("1", key=f"ANS_1_{unique_id}", use_container_width=True, on_click=handle_guess, args=(1,))
+        st.button("4", key=f"ANS_4_{unique_id}", use_container_width=True, on_click=handle_guess, args=(4,))
+        st.button("7", key=f"ANS_7_{unique_id}", use_container_width=True, on_click=handle_guess, args=(7,))
+    with kcols[1]:
+        st.button("2", key=f"ANS_2_{unique_id}", use_container_width=True, on_click=handle_guess, args=(2,))
+        st.button("5", key=f"ANS_5_{unique_id}", use_container_width=True, on_click=handle_guess, args=(5,))
+        st.button("8", key=f"ANS_8_{unique_id}", use_container_width=True, on_click=handle_guess, args=(8,))
+    with kcols[2]:
+        st.button("3", key=f"ANS_3_{unique_id}", use_container_width=True, on_click=handle_guess, args=(3,))
+        st.button("6", key=f"ANS_6_{unique_id}", use_container_width=True, on_click=handle_guess, args=(6,))
+        st.button("9", key=f"ANS_9_{unique_id}", use_container_width=True, on_click=handle_guess, args=(9,))
+
+    # JS BRIDGE: Keyboard Support (Restricted ONLY to Answer Dialpad Rows)
+    js_code = f"""<script>
+    const p = window.parent.document;
+    if(window.parent._kbClean) window.parent._kbClean();
+    const kbHandler = (e) => {{
+        if (e.key >= '1' && e.key <= '9') {{
+            const btns = Array.from(p.querySelectorAll('button'));
+            // ONLY target buttons that are inside a column grid (data-testid="stHorizontalBlock")
+            // This excludes the "Floated" top bar buttons.
+            const target = btns.find(b => {{
+                return b.innerText && b.innerText.trim() === e.key && 
+                       b.closest('[data-testid="stHorizontalBlock"]');
+            }});
+            if (target) target.click();
+        }}
+    }};
+    p.addEventListener('keydown', kbHandler);
+    window.parent._kbClean = () => p.removeEventListener('keydown', kbHandler);
+    </script>"""
+    components.html(js_code, height=0, width=0)
+
+    # Cleanup state after render
+    if st.session_state.get('feedback_state') != 'neutral':
+        st.session_state.feedback_state = 'neutral'
+
+def render_practice():
+    """Practice mode container."""
+    sync_hw_bridge()
+    render_practice_shard()
+    st.markdown('<div class="menu-btn-container" style="margin-top: 30px;">', unsafe_allow_html=True)
+    st.button("MAIN MENU", on_click=go_home, use_container_width=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
 def render_leaderboard():
     sync_hw_bridge()
     nick = st.session_state.get('nickname', '')
@@ -1084,6 +1234,8 @@ if st.session_state.game_status == 'home':
     render_home()
 elif st.session_state.game_status == 'playing':
     render_gameplay()
+elif st.session_state.game_status == 'practice':
+    render_practice()
 elif st.session_state.game_status == 'game_over':
     render_game_over()
 elif st.session_state.game_status == 'tutorial':
